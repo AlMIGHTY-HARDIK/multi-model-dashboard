@@ -1,7 +1,7 @@
 {
     "builds": [
       {
-        "src": "app.py",
+        "src": "multi-model-dashboard\\app.py",
         "use": "@vercel/python",
         "config": {
           "pythonVersion": "3.10"
@@ -11,7 +11,7 @@
     "routes": [
       {
         "src": "/(.*)",
-        "dest": "app.py"
+        "dest": "multi-model-dashboard\\app.py"
       }
     ]
   }
