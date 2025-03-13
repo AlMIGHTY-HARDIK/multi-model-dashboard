@@ -1,18 +1,17 @@
 {
-    "builds": [
-      {
-        "src": "multi-model-dashboard\\app.py",
-        "use": "@vercel/python",
-        "config": {
-          "pythonVersion": "3.10"
-        }
+  "builds": [
+    {
+      "src": "multi-model-dashboard/app.py",
+      "use": "@vercel/python",
+      "config": {
+        "pythonVersion": "3.10"
       }
-    ],
-    "routes": [
-      {
-        "src": "/(.*)",
-        "dest": "multi-model-dashboard\\app.py"
-      }
-    ]
-  }
-  
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "multi-model-dashboard/app.py"
+    }
+  ]
+}
