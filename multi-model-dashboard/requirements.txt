@@ -1,3 +1,4 @@
+explainerdashboard>=0.5; python_version < "3.11"
 dash>=2.0
 dash-bootstrap-components>=1.0
 plotly>=5.0
@@ -5,6 +6,3 @@ pandas>=1.0
 numpy>=1.18
 scikit-learn>=0.24
 matplotlib>=3.0
-explainerdashboard>=0.5
-fastapi>=0.70
-starlette>=0.14
