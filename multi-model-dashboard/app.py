@@ -32,17 +32,15 @@ from sklearn.metrics import (
 )
 
 from explainerdashboard import ClassifierExplainer
-from explainerdashboard.custom import (
-    ExplainerComponent, ShapSummaryComponent, ImportancesComponent,
-    ConfusionMatrixComponent, FeatureInputComponent, ShapDependenceComponent
-)
+from explainerdashboard.custom import ExplainerComponent
 
 import dash_bootstrap_components as dbc
 from dash import dcc, html, Input, Output, Dash
 import plotly.express as px
+import shap
 
 ##############################################################################
-# Helper: Decide SHAP Explainer Type
+# Decide SHAP Explainer Type
 ##############################################################################
 def decide_shap_type(model_key):
     if model_key in ["rf", "dt"]:
@@ -51,7 +49,7 @@ def decide_shap_type(model_key):
         return "kernel"
 
 ##############################################################################
-# Helper: Create a Precision-Recall Plot
+# Create a Precision-Recall Plot
 ##############################################################################
 def create_precision_recall_plot(explainer, label):
     y_test = explainer.y_test if hasattr(explainer, "y_test") else explainer.y
@@ -72,85 +70,339 @@ def create_precision_recall_plot(explainer, label):
     return base64.b64encode(buf.getvalue()).decode('utf-8')
 
 ##############################################################################
+# Create Confusion Matrix Table
+##############################################################################
+def create_confusion_matrix_table(cm):
+    """
+    Returns a Dash HTML table displaying the confusion matrix with row/column headers.
+    Expects cm to be a 2D list/array, e.g. [[tn, fp], [fn, tp]].
+    """
+    return html.Table([
+        html.Thead(
+            html.Tr([
+                html.Th(""),
+                html.Th("Predicted 0", style={"padding": "6px 12px"}),
+                html.Th("Predicted 1", style={"padding": "6px 12px"})
+            ])
+        ),
+        html.Tbody([
+            html.Tr([
+                html.Th("Actual 0", style={"padding": "6px 12px"}),
+                html.Td(str(cm[0][0]), style={"padding": "6px 12px"}),
+                html.Td(str(cm[0][1]), style={"padding": "6px 12px"})
+            ]),
+            html.Tr([
+                html.Th("Actual 1", style={"padding": "6px 12px"}),
+                html.Td(str(cm[1][0]), style={"padding": "6px 12px"}),
+                html.Td(str(cm[1][1]), style={"padding": "6px 12px"})
+            ])
+        ])
+    ],
+    style={
+        "border": "1px solid #ddd",
+        "borderCollapse": "collapse",
+        "marginTop": "10px",
+        "width": "100%"
+    })
+
+##############################################################################
+# Custom Helper Functions for SHAP Components
+##############################################################################
+def get_custom_shap_summary(explainer, shap_type):
+    """
+    Generates a custom SHAP summary bar plot using Plotly.
+    """
+    X_test = explainer.X_test if hasattr(explainer, "X_test") else explainer.X
+    bg = X_test.sample(min(50, len(X_test)), random_state=42)
+    model = explainer.model
+
+    if shap_type == "tree":
+        explainer_shap = shap.TreeExplainer(model, data=bg)
+        shap_values = explainer_shap.shap_values(X_test)
+        shap_array = shap_values[1] if isinstance(shap_values, list) and len(shap_values)==2 else shap_values
+    else:
+        explainer_shap = shap.KernelExplainer(model.predict_proba, bg)
+        shap_values = explainer_shap.shap_values(X_test)
+        shap_array = shap_values[1] if isinstance(shap_values, list) and len(shap_values)==2 else shap_values
+
+    if shap_array.ndim == 3 and shap_array.shape[2] == 2:
+        shap_array = shap_array[:, :, 1]
+
+    # Align columns if necessary
+    n_shap_cols = shap_array.shape[1]
+    n_actual_cols = X_test.shape[1]
+    if n_shap_cols > n_actual_cols:
+        shap_array = shap_array[:, :n_actual_cols]
+    elif n_shap_cols < n_actual_cols:
+        X_test = X_test.iloc[:, :n_shap_cols]
+
+    feature_names = list(X_test.columns)
+    mean_abs_shap = np.mean(np.abs(shap_array), axis=0)
+    df_shap = pd.DataFrame({"feature": feature_names, "mean_abs_shap": mean_abs_shap})
+    df_shap = df_shap.sort_values("mean_abs_shap", ascending=True)
+
+    fig = px.bar(
+        df_shap,
+        x="mean_abs_shap",
+        y="feature",
+        orientation="h",
+        labels={"mean_abs_shap": "Mean |SHAP value|", "feature": "Attribute"},
+        title="Custom SHAP Summary (Bar Plot)"
+    )
+    fig.update_layout(yaxis={'categoryorder': 'total ascending'})
+    return dcc.Graph(figure=fig)
+
+def get_custom_feature_importance(explainer, shap_type):
+    """
+    Generates a custom feature importance plot.
+    Uses model.feature_importances_ if available; otherwise, falls back to SHAP mean abs values.
+    """
+    X_test = explainer.X_test if hasattr(explainer, "X_test") else explainer.X
+    model = explainer.model
+
+    if hasattr(model, "feature_importances_"):
+        importances = model.feature_importances_
+        feature_names = list(X_test.columns)
+        if len(importances) > len(feature_names):
+            importances = importances[:len(feature_names)]
+        elif len(importances) < len(feature_names):
+            feature_names = feature_names[:len(importances)]
+    else:
+        bg = X_test.sample(min(50, len(X_test)), random_state=42)
+        if shap_type == "tree":
+            explainer_shap = shap.TreeExplainer(model, data=bg)
+            shap_values = explainer_shap.shap_values(X_test)
+            shap_array = shap_values[1] if isinstance(shap_values, list) and len(shap_values)==2 else shap_values
+        else:
+            explainer_shap = shap.KernelExplainer(model.predict_proba, bg)
+            shap_values = explainer_shap.shap_values(X_test)
+            shap_array = shap_values[1] if isinstance(shap_values, list) and len(shap_values)==2 else shap_values
+
+        if shap_array.ndim == 3 and shap_array.shape[2] == 2:
+            shap_array = shap_array[:, :, 1]
+
+        n_shap_cols = shap_array.shape[1]
+        n_actual_cols = X_test.shape[1]
+        if n_shap_cols > n_actual_cols:
+            shap_array = shap_array[:, :n_actual_cols]
+        elif n_shap_cols < n_actual_cols:
+            X_test = X_test.iloc[:, :n_shap_cols]
+
+        feature_names = list(X_test.columns)
+        importances = np.mean(np.abs(shap_array), axis=0)
+
+    df_imp = pd.DataFrame({"feature": feature_names, "importance": importances})
+    df_imp = df_imp.sort_values("importance", ascending=True)
+
+    fig = px.bar(
+        df_imp,
+        x="importance",
+        y="feature",
+        orientation="h",
+        labels={"importance": "Importance", "feature": "Attribute"},
+        title="Custom Feature Importance"
+    )
+    fig.update_layout(yaxis={'categoryorder': 'total ascending'})
+    return dcc.Graph(figure=fig)
+
+def get_custom_dependence_plot(explainer, shap_type, selected_feature=None):
+    """
+    Generates a custom SHAP dependence plot.
+    This function creates a matplotlib figure via shap.dependence_plot, then encodes it
+    as a PNG image and embeds it in a Plotly figure.
+    """
+    X_test = explainer.X_test if hasattr(explainer, "X_test") else explainer.X
+    model = explainer.model
+    bg = X_test.sample(min(50, len(X_test)), random_state=42)
+
+    if shap_type == "tree":
+        explainer_shap = shap.TreeExplainer(model, data=bg)
+        shap_values = explainer_shap.shap_values(X_test)
+        shap_array = shap_values[1] if isinstance(shap_values, list) and len(shap_values)==2 else shap_values
+    else:
+        explainer_shap = shap.KernelExplainer(model.predict_proba, bg)
+        shap_values = explainer_shap.shap_values(X_test)
+        shap_array = shap_values[1] if isinstance(shap_values, list) and len(shap_values)==2 else shap_values
+
+    if shap_array.ndim == 3 and shap_array.shape[2] == 2:
+        shap_array = shap_array[:, :, 1]
+
+    if selected_feature is None or selected_feature not in X_test.columns:
+        selected_feature = X_test.columns[0]
+
+    fig_dep = plt.figure()
+    shap.dependence_plot(selected_feature, shap_array, X_test, show=False)
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png", bbox_inches="tight")
+    plt.close(fig_dep)
+    buf.seek(0)
+    encoded = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+    fig = go.Figure()
+    fig.add_layout_image(
+        dict(
+            source="data:image/png;base64," + encoded,
+            xref="paper", yref="paper",
+            x=0, y=1,
+            sizex=1, sizey=1,
+            xanchor="left", yanchor="top"
+        )
+    )
+    fig.update_xaxes(visible=False)
+    fig.update_yaxes(visible=False)
+    fig.update_layout(
+        width=700,
+        height=500,
+        margin=dict(l=0, r=0, t=40, b=0),
+        title=f"Custom SHAP Dependence Plot: {selected_feature}"
+    )
+    return dcc.Graph(figure=fig)
+
+##############################################################################
 # Custom Dashboard Component
 ##############################################################################
 class CustomDashboard(ExplainerComponent):
-    def __init__(self, explainer, prefix="", name=None):
+    def __init__(self, explainer, prefix="", name=None, model_key=None):
         super().__init__(explainer, name=name)
         self.prefix = prefix
-        self.shap_summary = ShapSummaryComponent(explainer)
-        self.feature_importance = ImportancesComponent(explainer)
-        self.confusion_matrix = ConfusionMatrixComponent(explainer)
-        self.feature_input = FeatureInputComponent(explainer)
-        X_data = explainer.X_test if hasattr(explainer, "X_test") else explainer.X
-        num_cols = X_data.select_dtypes(exclude=["object"]).columns.tolist()
-        dep_col = num_cols[0] if len(num_cols) > 0 else None
-        self.dependence = ShapDependenceComponent(explainer, col=dep_col) if dep_col else None
+        self.model_key = model_key
+        self.shap_type = decide_shap_type(model_key) if model_key else "kernel"
+        # Generate the precision-recall plot (base64 encoded)
         self.pr_curve_img = create_precision_recall_plot(explainer, label=name or "Model")
 
     def layout(self):
         y_true = self.explainer.y_test if hasattr(self.explainer, "y_test") else self.explainer.y
         X_data = self.explainer.X_test if hasattr(self.explainer, "X_test") else self.explainer.X
         cm = confusion_matrix(y_true, self.explainer.model.predict(X_data))
-        print(f"Confusion Matrix for {self.name}: \n{cm}")
-        components = [
-            dbc.Row([
-                dbc.Col(
-                    dbc.Card([
-                        dbc.CardHeader(html.H4("Model Overview, Inputs, and Prediction", className="text-primary")),
-                        dbc.CardBody([
-                            html.H5("Model Metrics", className="mt-3"),
-                            html.Ul([
-                                html.Li(f"Accuracy: {accuracy_score(y_true, self.explainer.model.predict(X_data)):.2%}"),
-                                html.Li(f"F1 Score: {f1_score(y_true, self.explainer.model.predict(X_data)):.2%}"),
-                                html.Li(f"Precision: {precision_score(y_true, self.explainer.model.predict(X_data)):.2%}"),
-                                html.Li(f"Recall: {recall_score(y_true, self.explainer.model.predict(X_data)):.2%}")
-                            ], style={'fontSize': '1rem'}),
-                            html.Label("Input Feature Example:", style={'fontWeight': 'bold'}),
-                            dcc.Input(
-                                id=f"{self.prefix}input-feature",
-                                type="text",
-                                placeholder="Enter value",
-                                style={'marginBottom': '15px'}
-                            ),
-                            html.Button("Predict", id=f"{self.prefix}predict-button", n_clicks=0, className="btn btn-primary"),
-                            html.H5("Prediction Result:", className="mt-4"),
-                            html.Div(
-                                id=f"{self.prefix}prediction-output",
-                                className="text-success font-weight-bold",
-                                style={'fontSize': '1.1rem'}
-                            )
-                        ])
-                    ], className="shadow-sm animate__animated animate__fadeIn", 
-                       style={'borderRadius': '15px', 'border': '1px solid #007bff', 'padding': '10px'}),
-                    width=6
+
+        # Left Card 1: Model Overview, Inputs, and Prediction
+        left_overview = dbc.Card([
+            dbc.CardHeader(html.H4("Model Overview, Inputs, and Prediction", className="text-primary")),
+            dbc.CardBody([
+                # Model Metrics Heading + Description
+                html.H5("📈 Model Metrics (Accuracy, F1 Score, Precision, Recall)", className="mt-3"),
+                html.P(
+                    "These numbers indicate how well the AI model performs. A higher score means a more "
+                    "reliable AI model. Metrics include:\n\n"
+                    "• Accuracy: The overall correctness of the model.\n\n"
+                    "• Precision: When the model predicts “approved,” how often is it correct?\n\n"
+                    "• Recall: How well does the model catch all relevant cases?\n\n"
+                    "• F1 Score: A balance between precision and recall.",
+                    style={"textAlign": "justify", "fontSize": "0.9rem", "marginBottom": "15px"}
                 ),
-                dbc.Col(
-                    dbc.Card([
-                        dbc.CardHeader(html.H4("Explainable AI Insights", className="text-primary")),
-                        dbc.CardBody([
-                            html.H5("SHAP Summary Plot", className="mt-3"),
-                            self.shap_summary.layout(),
-                            html.H5("Feature Importance", className="mt-4"),
-                            self.feature_importance.layout(),
-                            html.H5("Dependence Plot", className="mt-4"),
-                            self.dependence.layout() if self.dependence else html.P("Not available"),
-                            html.H5("Confusion Matrix", className="mt-4"),
-                            self.confusion_matrix.layout(),
-                            html.H5("Precision-Recall Curve", className="mt-4"),
-                            html.Img(src=f"data:image/png;base64,{self.pr_curve_img}",
-                                     style={'width': '100%', 'marginBottom': '20px'})
-                        ])
-                    ], className="shadow-sm animate__animated animate__fadeIn", 
-                       style={'borderRadius': '15px', 'border': '1px solid #28a745', 'padding': '10px'}),
-                    width=6
+                html.Ul([
+                    html.Li(f"Accuracy: {accuracy_score(y_true, self.explainer.model.predict(X_data)):.2%}"),
+                    html.Li(f"F1 Score: {f1_score(y_true, self.explainer.model.predict(X_data)):.2%}"),
+                    html.Li(f"Precision: {precision_score(y_true, self.explainer.model.predict(X_data)):.2%}"),
+                    html.Li(f"Recall: {recall_score(y_true, self.explainer.model.predict(X_data)):.2%}")
+                ], style={'fontSize': '1rem', 'marginBottom': '20px'}),
+
+                # Input & Prediction
+                html.Label("Input Feature Example:", style={'fontWeight': 'bold'}),
+                dcc.Input(
+                    id=f"{self.prefix}input-feature",
+                    type="text",
+                    placeholder="Enter value",
+                    style={'marginBottom': '15px'}
+                ),
+                html.Button("Predict", id=f"{self.prefix}predict-button", n_clicks=0, className="btn btn-primary"),
+                html.H5("Prediction Result:", className="mt-4"),
+                html.Div(
+                    id=f"{self.prefix}prediction-output",
+                    className="text-success font-weight-bold",
+                    style={'fontSize': '1.1rem'}
                 )
-            ]),
+            ])
+        ], className="shadow-sm animate__animated animate__fadeIn", 
+           style={'borderRadius': '15px', 'border': '1px solid #007bff', 'padding': '10px'})
+
+        # Left Card 2: Confusion Matrix & Precision-Recall Curve
+        left_additional = dbc.Card([
+            dbc.CardHeader(html.H4("Confusion Matrix & Precision-Recall Curve", className="text-primary")),
+            dbc.CardBody([
+                # Confusion Matrix Heading + Description
+                html.H5("🔍 Confusion Matrix", className="mt-3"),
+                html.P(
+                    "The confusion matrix helps in understanding AI’s prediction accuracy. "
+                    "It shows where the model made correct predictions and where it made mistakes "
+                    "(e.g., incorrectly rejecting or approving loans).",
+                    style={"textAlign": "justify", "fontSize": "0.9rem", "marginBottom": "15px"}
+                ),
+                create_confusion_matrix_table(cm),
+
+                # Precision-Recall Curve Heading + Description
+                html.H5("📈 Precision-Recall Curve", className="mt-4"),
+                html.P(
+                    "This plot balances precision and recall in AI decision-making. If precision is too high, "
+                    "the model may miss valid cases. If recall is too high, the model may approve incorrect cases. "
+                    "This graph helps in optimizing AI decision thresholds.",
+                    style={"textAlign": "justify", "fontSize": "0.9rem", "marginBottom": "15px"}
+                ),
+                html.Img(
+                    src=f"data:image/png;base64,{self.pr_curve_img}",
+                    style={'width': '100%', 'marginBottom': '20px'}
+                )
+            ])
+        ], className="shadow-sm animate__animated animate__fadeIn", 
+           style={'borderRadius': '15px', 'border': '1px solid #007bff', 'padding': '10px', 'marginTop': '20px'})
+
+        left_column = dbc.Col([left_overview, left_additional], width=6)
+
+        # Right Column: Custom Explainable AI Insights
+        right_column = dbc.Col(
+            dbc.Card([
+                dbc.CardHeader(html.H4("Explainable AI Insights (Custom)", className="text-primary")),
+                dbc.CardBody([
+                    # SHAP Summary Plot Heading + Description
+                    html.H5("📊 SHAP Summary Plot (Feature Importance Analysis)", className="mt-3"),
+                    html.P(
+                        "This plot reveals which features (e.g., income, employment status) influence AI "
+                        "decisions the most. Understanding which factors drive AI decisions ensures "
+                        "transparency and allows for adjustments if needed.",
+                        style={"textAlign": "justify", "fontSize": "0.9rem", "marginBottom": "15px"}
+                    ),
+                    get_custom_shap_summary(self.explainer, self.shap_type),
+
+                    # Feature Importance
+                    html.H5("Feature Importance", className="mt-4"),
+                    html.P(
+                        "Feature importance ranks features by their overall impact on the model’s predictions. "
+                        "A higher bar indicates that the feature has a stronger influence. "
+                        "This helps answer the question: Which inputs matter the most for deciding if someone is Vulnerable?",
+                        style={"textAlign": "justify", "fontSize": "0.9rem", "marginBottom": "15px"}
+                    ),
+                    html.Ul([
+                        html.Li("High importance suggests the feature heavily influences the final prediction."),
+                        html.Li("Low importance indicates the feature plays a smaller role."),
+                        html.Li("Comparing bars helps identify the top factors driving the model’s decisions."),
+                    ], style={"fontSize": "0.9rem", "marginBottom": "15px"}),
+                    get_custom_feature_importance(self.explainer, self.shap_type),
+
+                    # SHAP Dependence Plot Heading + Description
+                    html.H5("🔎 SHAP Dependence Plot", className="mt-4"),
+                    html.P(
+                        "This plot shows how changing a specific factor (e.g., self-employment status) "
+                        "impacts AI decisions. It helps users see which inputs affect predictions the "
+                        "most, making AI decision-making more interpretable.",
+                        style={"textAlign": "justify", "fontSize": "0.9rem", "marginBottom": "15px"}
+                    ),
+                    get_custom_dependence_plot(self.explainer, self.shap_type)
+                ])
+            ], className="shadow-sm animate__animated animate__fadeIn", 
+               style={'borderRadius': '15px', 'border': '1px solid #28a745', 'padding': '10px'}),
+            width=6
+        )
+
+        # Combine columns
+        components = [
+            dbc.Row([left_column, right_column]),
             dbc.Row([
                 dbc.Col(
-                    html.Footer("© 2025 Prediction Dashboard | Data-Driven Insights & Explainability",
-                                className="text-center text-light bg-dark p-3 mt-4",
-                                style={'fontFamily': 'Courier New, monospace', 'fontSize': '1rem'})
+                    html.Footer(
+                        "© 2025 Prediction Dashboard | Data-Driven Insights & Explainability",
+                        className="text-center text-light bg-dark p-3 mt-4",
+                        style={'fontFamily': 'Courier New, monospace', 'fontSize': '1rem'}
+                    )
                 )
             ])
         ]
@@ -211,7 +463,6 @@ external_stylesheets = [
 ]
 app = Dash(__name__, external_stylesheets=external_stylesheets)
 
-# "Story" or Intro Card at the top
 # "Story" or Intro Card at the top with enhanced design
 story_header = dbc.Container(
     dbc.Card([
@@ -352,7 +603,6 @@ story_header = dbc.Container(
     fluid=True, style={'marginTop': '40px', 'marginBottom': '40px'}
 )
 
-
 DATASET_OPTIONS = [
     {"label": "Heart_UCI.csv", "value": "heart"},
     {"label": "House_Price_Prediction.csv", "value": "house"},
@@ -396,11 +646,25 @@ app.layout = dbc.Container(fluid=True, children=[
 
     dbc.Row([
         dbc.Col([
-            html.H5("AI Decisions: Before and After Explainability"),
+            html.H5("📊 AI Decisions: Before and After Explainability"),
+            html.P(
+                "This plot illustrates how AI decisions change after applying explainability "
+                "techniques. Before explainability, AI made decisions without transparency. "
+                "After applying explainability tools, biases were identified and adjusted, "
+                "making AI decisions more trustworthy and fair.",
+                style={"textAlign": "justify", "fontSize": "0.9rem", "marginBottom": "15px"}
+            ),
             dcc.Graph(id="decisions-graph", figure={})
         ], width=6),
         dbc.Col([
-            html.H5("Bias Check: Before and After Explainability"),
+            html.H5("🚨 Bias Check: Before and After Explainability"),
+            html.P(
+                "This visualization highlights the biases in AI decision-making before and "
+                "after explainability techniques were applied. Initially, the AI model might "
+                "favor certain groups (e.g., based on gender or income). With explainability, "
+                "these biases are detected and corrected, ensuring fairness in decision-making.",
+                style={"textAlign": "justify", "fontSize": "0.9rem", "marginBottom": "15px"}
+            ),
             dcc.Graph(id="bias-graph", figure={})
         ], width=6)
     ], className="mt-4"),
@@ -462,7 +726,8 @@ def update_interface(selected_dataset, selected_model):
 
     dashboard = CustomDashboard(
         explainer, prefix=f"{selected_dataset}_{selected_model}_",
-        name=f"{selected_dataset.upper()} + {selected_model.upper()}"
+        name=f"{selected_dataset.upper()} + {selected_model.upper()}",
+        model_key=selected_model
     )
 
     # Dummy Bar Chart for Decisions
@@ -509,4 +774,4 @@ server = FastAPI()
 server.mount("/", WSGIMiddleware(app.server))
 
 if __name__ == '__main__':
-    app.run_server(debug=True,host="0.0.0.0", port=8050)
+    app.run_server(debug=True, host="0.0.0.0", port=8000)
