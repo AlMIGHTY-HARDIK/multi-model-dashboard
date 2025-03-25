@@ -413,11 +413,11 @@ class CustomDashboard(ExplainerComponent):
 ##############################################################################
 def load_dataset(dataset_key):
     mapping = {
-        "heart":  r"saved_datasets\Heart_UCI.csv",
-        "house":  r"saved_datasets\House_Price_Prediction.csv",
-        "loan":   r"saved_datasets\Loan_Prediction.csv",
-        "stocks": r"saved_datasets\Stocks.csv",
-        "adult":  r"saved_datasets\UCI_Adult_Census_Income.csv"
+        "heart":  r"saved_datasets\\Heart_UCI.csv",
+        "house":  r"saved_datasets\\House_Price_Prediction.csv",
+        "loan":   r"saved_datasets\\Loan_Prediction.csv",
+        "stocks": r"saved_datasets\\Stocks.csv",
+        "adult":  r"saved_datasets\\UCI_Adult_Census_Income.csv"
     }
     if dataset_key not in mapping:
         raise ValueError("Unknown dataset key.")
